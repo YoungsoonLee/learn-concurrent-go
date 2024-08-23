@@ -14,3 +14,8 @@ func main() {
 	wg.Wait()
 	fmt.Println("All done!")
 }
+
+func doWork(id int, wg *sync.WaitGroup) {
+	defer wg.Done()
+	fmt.Printf("Worker %d starting\n", id)
+}
