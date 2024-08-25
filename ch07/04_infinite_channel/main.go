@@ -5,15 +5,23 @@ import (
 	"time"
 )
 
+// func receiver(message <-chan int) { // Receive-only channel
+// 	for {
+// 		msg, more := <-message // Check if the channel is closed
+// 		fmt.Println(time.Now().Format("15:04:05"), "Received:", msg, more)
+// 		time.Sleep(1 * time.Second)
+// 		if !more { // check if the channel is closed
+// 			return
+// 		}
+// 	}
+// }
+
 func receiver(message <-chan int) { // Receive-only channel
-	for {
-		msg, more := <-message // Check if the channel is closed
-		fmt.Println(time.Now().Format("15:04:05"), "Received:", msg, more)
+	for msg := range message {
+		fmt.Println(time.Now().Format("15:04:05"), "Received:", msg)
 		time.Sleep(1 * time.Second)
-		if !more { // check if the channel is closed
-			return
-		}
 	}
+	fmt.Println("Receiver done!")
 }
 
 func main() {
