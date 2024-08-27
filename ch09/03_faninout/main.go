@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -55,7 +56,7 @@ func extractWords(quit <-chan int, pages <-chan string) <-chan string {
 	words := make(chan string)
 	go func() {
 		defer close(words)
-		wordRegex := regexp.MustCompile(`[a-zA-z]+`)
+		wordRegex := regexp.MustCompile(`[a-zA-Z]+`)
 		moreData, page := true, ""
 		for moreData {
 			select {
@@ -71,6 +72,34 @@ func extractWords(quit <-chan int, pages <-chan string) <-chan string {
 		}
 	}()
 	return words
+}
+
+func longestWords(quit <-chan int, words <-chan string) <-chan string {
+	longWords := make(chan string)
+	go func() {
+		defer close(longWords)
+		uniqueWordsMap := make(map[string]bool)
+		uniqueWords := make([]string, 0)
+		moreData, word := true, ""
+		for moreData {
+			select {
+			case word, moreData = <-words:
+				if moreData && !uniqueWordsMap[word] {
+					uniqueWordsMap[word] = true
+					uniqueWords = append(uniqueWords, word)
+				}
+			case <-quit:
+				return
+			}
+		}
+
+		sort.Slice(uniqueWords, func(i, j int) bool {
+			return len(uniqueWords[i]) > len(uniqueWords[j])
+		})
+
+		longWords <- strings.Join(uniqueWords[:10], ", ") // Once the input channel is closed, sends a string with the 10 longest words on the output channel
+	}()
+	return longWords
 }
 
 // FanIn function takes a quit channel and a variadic number of input channels and returns a single output channel.
@@ -101,7 +130,103 @@ func FanIn[K any](quit <-chan int, allChannels ...<-chan K) chan K {
 	return output
 }
 
+// Broadcast function takes a quit channel, an input channel, and an integer n, and returns a slice of n output channels.
+func Broadcast[K any](quit chan int, input <-chan K, n int) []chan K {
+	outputs := CreateAll[K](n) //Creates n output channels of type K
+	go func() {
+		defer CloseAll(outputs...) // closes all output channels when the input channel is closed
+
+		var msg K
+		moreData := true
+
+		for moreData {
+			select {
+			case msg, moreData = <-input: // receives messages from the input channel
+				if moreData {
+					for _, output := range outputs {
+						output <- msg // forwards the received message to all output channels
+					}
+				}
+			case <-quit:
+				return
+			}
+		}
+	}()
+	return outputs
+}
+
+// CreateAll function takes an integer n and returns a slice of n output channels.
+func CreateAll[K any](n int) []chan K {
+	outputs := make([]chan K, n)
+	for i := range outputs {
+		outputs[i] = make(chan K)
+	}
+	return outputs
+}
+
+// CloseAll function takes a variadic number of channels and closes all of them.
+func CloseAll[K any](channels ...chan K) {
+	for _, c := range channels {
+		close(c)
+	}
+}
+
+func frequentWords(quit <-chan int, words <-chan string) <-chan string {
+	mostFrequentWords := make(chan string)
+	go func() {
+		defer close(mostFrequentWords)
+		freqMap := make(map[string]int) // Creates a map to store the frequency occurrence of each unique word
+		freqList := make([]string, 0)   // Creates a slice to store the unique words
+		moreData, word := true, ""
+		for moreData {
+			select {
+			case word, moreData = <-words:
+				if moreData {
+					if freqMap[word] == 0 {
+						freqList = append(freqList, word)
+					}
+					freqMap[word]++
+				}
+			case <-quit:
+				return
+			}
+		}
+		sort.Slice(freqList, func(i, j int) bool {
+			return freqMap[freqList[i]] > freqMap[freqList[j]]
+		})
+		mostFrequentWords <- strings.Join(freqList[:10], ", ") // Sends the 10 most frequent words to the output channel
+	}()
+	return mostFrequentWords
+}
+
+// Take function takes a quit channel, an integer n, and an input channel and returns an output channel.
+func Take[K any](quit chan int, n int, input <-chan K) <-chan K {
+	output := make(chan K)
+	go func() {
+		defer close(output)
+		moreData := true
+		var msg K
+		for n > 0 && moreData { // Continuesforwardingmessagesas long as there is more data and countdown n is greater than 0
+			select {
+			case msg, moreData = <-input: // Reads the next message from the input
+				if moreData {
+					output <- msg
+					n--
+				}
+			case <-quit:
+				return
+			}
+		}
+
+		if n == 0 {
+			close(quit)
+		}
+	}()
+	return output
+}
+
 func main() {
+	quitWords := make(chan int)
 	quit := make(chan int)
 	defer close(quit)
 
@@ -112,8 +237,25 @@ func main() {
 		pages[i] = downloadPages(quit, urls) // fanout
 	}
 
-	results := extractWords(quit, FanIn(quit, pages...)) // fanin
-	for word := range results {
-		fmt.Println(word)
-	}
+	// pipeling
+	// results := longestWords(quit, extractWords(quit, FanIn(quit, pages...))) // fanin
+	// for word := range results {
+	// 	fmt.Println(word)
+	// }
+
+	// broadcast
+	// words := extractWords(quit, FanIn(quit, pages...))
+	// wordsMulti := Broadcast(quit, words, 2)               //Creates a goroutine that will broadcast the contents of the words channel to two output channels
+	// longestResults := longestWords(quit, wordsMulti[0])   // Creates the goroutine to find the longest words from the input channel
+	// frequentResults := frequentWords(quit, wordsMulti[1]) // Creates the goroutine to find the most frequently used words from the input channel
+	// fmt.Println("Longest Words:", <-longestResults)
+	// fmt.Println("Most frequent Words:", <-frequentResults)
+
+	// Take
+	words := Take(quitWords, 10000, extractWords(quitWords, FanIn(quit, pages...)))
+	wordsMulti := Broadcast(quit, words, 2)               //Creates a goroutine that will broadcast the contents of the words channel to two output channels
+	longestResults := longestWords(quit, wordsMulti[0])   // Creates the goroutine to find the longest words from the input channel
+	frequentResults := frequentWords(quit, wordsMulti[1]) // Creates the goroutine to find the most frequently used words from the input channel
+	fmt.Println("Longest Words:", <-longestResults)
+	fmt.Println("Most frequent Words:", <-frequentResults)
 }
